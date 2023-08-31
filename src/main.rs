@@ -1,19 +1,23 @@
-mod cxxqt_object;
+use gtk::glib;
+use gtk::prelude::*;
 
-use cxx_qt_lib::{QGuiApplication, QQmlApplicationEngine, QUrl};
+fn main() -> glib::ExitCode {
+    let application = gtk::Application::builder()
+        .application_id("crabgram")
+        .build();
+    application.connect_activate(build_ui);
+    application.run()
+}
 
-fn main() {
-    // Create the application and engine
-    let mut app = QGuiApplication::new();
-    let mut engine = QQmlApplicationEngine::new();
+fn build_ui(application: &gtk::Application) {
+    let window = gtk::ApplicationWindow::new(application);
 
-    // Load the QML path into the engine
-    if let Some(engine) = engine.as_mut() {
-        engine.load(&QUrl::from("qrc:/main.qml"));
-    }
+    window.set_title(Some("Crabgram"));
+    window.set_default_size(350, 70);
 
-    // Start the app
-    if let Some(app) = app.as_mut() {
-        app.exec();
-    }
+    let button = gtk::Button::with_label("Click me!");
+
+    window.set_child(Some(&button));
+
+    window.present();
 }
