@@ -7,3 +7,6 @@ edition = "2021"
 
 [dependencies]
 gtk = { version = "0.7.2", package = "gtk4", features = ["v4_12"] }
+grammers-client = { path = "./grammers/lib/grammers-client" }
+grammers-session = { path = "./grammers/lib/grammers-session" }
+grammers-tl-types = { path = "./grammers/lib/grammers-tl-types" }
