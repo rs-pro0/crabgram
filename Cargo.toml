@@ -10,3 +10,8 @@ gtk = { version = "0.7.2", package = "gtk4", features = ["v4_12"] }
 grammers-client = { path = "./grammers/lib/grammers-client" }
 grammers-session = { path = "./grammers/lib/grammers-session" }
 grammers-tl-types = { path = "./grammers/lib/grammers-tl-types" }
+log = "0.4.19"
+simple_logger = "4.2.0"
+dotenv = "0.15.0"
+futures-util = "0.3.28"
+tokio = { version = "1.30.0", features = ["full"] }
