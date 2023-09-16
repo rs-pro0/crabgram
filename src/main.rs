@@ -1,16 +1,13 @@
 use dotenv::dotenv;
-use glib::{clone, MainContext, Priority};
 use gtk::glib;
 use gtk::prelude::*;
 use log;
 use simple_logger::SimpleLogger;
 use std::env;
 use std::io::{self, BufRead as _, Write as _};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
-use tokio::{runtime, task};
+use tokio::runtime;
 
 const SESSION_FILE: &str = "sess.session";
 
@@ -30,7 +27,7 @@ fn prompt(message: &str) -> Result<String, Box<dyn std::error::Error>> {
 
 #[tokio::main]
 async fn main() {
-    let (sender, receiver): (
+    let (interface_sender, interface_receiver): (
         glib::Sender<InterfaceMessage>,
         glib::Receiver<InterfaceMessage>,
     ) = glib::MainContext::channel(glib::Priority::DEFAULT);
@@ -44,36 +41,107 @@ async fn main() {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(async_main(sender))
+            .block_on(async_main(interface_sender))
             .unwrap()
     });
+    let mut dialog_global_list: Vec<grammers_client::types::Dialog> = Vec::new();
+    let mut dialog_pinned_global_list: Vec<grammers_client::types::Dialog> = Vec::new();
+    let dialog_element_list: Vec<gtk::ListBoxRow> = Vec::new();
+    let dialog_element_list_mutex: Arc<Mutex<Vec<gtk::ListBoxRow>>> =
+        Arc::new(Mutex::new(dialog_element_list));
     let application_clone = application.clone();
-    receiver.attach(None, move |msg| {
+
+    interface_receiver.attach(None, move |msg| {
+        let grid_base = application_clone.windows()[0].child().unwrap();
+        let grid_base_grid: gtk::Grid = unsafe { grid_base.unsafe_cast() };
+        let scrolled_window: gtk::ScrolledWindow =
+            unsafe { grid_base_grid.child_at(0, 0).unwrap().unsafe_cast() };
+        let dialogs_element: gtk::Box = unsafe {
+            scrolled_window
+                .child()
+                .unwrap()
+                .first_child()
+                .unwrap()
+                .unsafe_cast()
+        };
+        let dialogs_listbox: gtk::ListBox =
+            unsafe { dialogs_element.first_child().unwrap().unsafe_cast() };
         match msg {
             InterfaceMessage::NewMessage(message) => {
-                println!(
+                let dialog_arc_clone = Arc::clone(&dialog_element_list_mutex);
+                let dialog_element_list_lock = dialog_arc_clone.lock().unwrap();
+                for dialog in dialog_element_list_lock.iter() {
+                    /*let label: gtk::Label =
+                    unsafe { dialog.child().unwrap().last_child().unwrap().unsafe_cast() };*/
+                    //println!("{}", label.text());
+                    if let Some(mut dt) =
+                        unsafe { dialog.data::<grammers_client::types::Dialog>("dialog") }
+                    {
+                        let data = unsafe { dt.as_mut() };
+                        if data.chat().id() == message.chat().id() {
+                            let dialogs_listbox_clone = dialogs_listbox.clone();
+                            dialogs_listbox_clone.remove(dialog);
+                            if data.dialog.pinned() {
+                                dialogs_listbox_clone.insert(dialog, 0);
+                            } else {
+                                dialogs_listbox_clone
+                                    .insert(dialog, dialog_pinned_global_list.len() as i32);
+                            }
+                        }
+                    } else {
+                        println!("empty data");
+                    }
+                }
+                if message.pinned() {
+                    for dialog_index in 0..dialog_pinned_global_list.len() {
+                        if dialog_pinned_global_list[dialog_index].chat().id()
+                            == message.chat().id()
+                        {
+                            dialog_pinned_global_list[dialog_index].last_message =
+                                Some(message.clone());
+                            dialog_pinned_global_list
+                                .push(dialog_global_list[dialog_index].clone());
+                            dialog_pinned_global_list.remove(dialog_index);
+                            break;
+                        }
+                    }
+                } else {
+                    for dialog_index in 0..dialog_global_list.len() {
+                        if dialog_global_list[dialog_index].chat().id() == message.chat().id() {
+                            dialog_global_list[dialog_index].last_message = Some(message.clone());
+                            dialog_global_list.push(dialog_global_list[dialog_index].clone());
+                            dialog_global_list.remove(dialog_index);
+                            break;
+                        }
+                    }
+                }
+                /*println!(
                     "got message {} from {}",
                     message.text(),
                     message.chat().name()
-                );
+                );*/
             }
-            InterfaceMessage::Dialogs(dialogs) => {
-                let grid_base = application_clone.windows()[0].child().unwrap();
-                let grid_base_grid: gtk::Grid = unsafe { grid_base.unsafe_cast() };
-                let dialogs_element: gtk::Box =
-                    unsafe { grid_base_grid.child_at(0, 0).unwrap().unsafe_cast() };
-                let dialogs_listbox: gtk::ListBox =
-                    unsafe { dialogs_element.first_child().unwrap().unsafe_cast() };
-
-                for dialog in dialogs {
-                    let row = gtk::ListBoxRow::new();
-                    let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-                    row_box.add_css_class("dialog");
-                    let label = gtk::Label::new(Some(dialog.chat.name()));
-                    row_box.append(&label);
-                    row.set_child(Some(&row_box));
-                    dialogs_listbox.append(&row);
-                }
+            InterfaceMessage::Dialogs(mut dialogs) => {
+                dialog_global_list.clear();
+                futures::executor::block_on(async {
+                    while let Some(dialog) = dialogs.next().await.unwrap() {
+                        if dialog.dialog.pinned() {
+                            dialog_pinned_global_list.push(dialog);
+                        } else {
+                            dialog_global_list.push(dialog);
+                        }
+                    }
+                });
+                dialog_global_list.reverse();
+                dialog_pinned_global_list.reverse();
+                let dialog_arc_clone = Arc::clone(&dialog_element_list_mutex);
+                let mut dialog_element_list_lock = dialog_arc_clone.lock().unwrap();
+                create_dialogs(
+                    &dialog_global_list,
+                    &dialog_pinned_global_list,
+                    &mut dialog_element_list_lock,
+                    dialogs_listbox.clone(),
+                );
             }
         }
         glib::ControlFlow::Continue
@@ -81,9 +149,50 @@ async fn main() {
     application.run();
 }
 
+fn create_dialogs(
+    dialogs: &Vec<grammers_client::types::Dialog>,
+    pinned_dialogs: &Vec<grammers_client::types::Dialog>,
+    dialog_elements: &mut Vec<gtk::ListBoxRow>,
+    dialogs_listbox: gtk::ListBox,
+) {
+    dialogs_listbox.remove_all();
+    for dialog in pinned_dialogs.iter().rev().chain(dialogs.iter().rev()) {
+        let row = gtk::ListBoxRow::new();
+        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        row_box.add_css_class("dialog");
+        let chat = dialog.chat.clone();
+        let label_text = match chat {
+            grammers_client::types::Chat::User(user) => {
+                if user.deleted() {
+                    "Deleted account".to_string()
+                } else if user.is_self() {
+                    "Saved Messages".to_string()
+                } else {
+                    user.full_name()
+                }
+            }
+            _ => chat.name().to_string(),
+        };
+        let label = gtk::Label::new(Some(&label_text));
+        row_box.append(&label);
+        row.set_child(Some(&row_box));
+        dialogs_listbox.append(&row);
+        unsafe {
+            row.set_data("dialog", dialog.clone());
+        }
+        dialog_elements.push(row);
+    }
+}
+
 enum InterfaceMessage {
     NewMessage(grammers_client::types::Message),
-    Dialogs(Vec<grammers_client::types::Dialog>),
+    //Dialogs(Vec<grammers_client::types::Dialog>),
+    Dialogs(
+        grammers_client::types::IterBuffer<
+            grammers_tl_types::functions::messages::GetDialogs,
+            grammers_client::types::Dialog,
+        >,
+    ),
 }
 
 fn load_css() {
@@ -110,9 +219,12 @@ fn build_ui(application: &gtk::Application) {
     main_window.add_css_class("main_window");
     main_window.set_hexpand(true);
     let dialogs = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let scrolled_window = gtk::ScrolledWindow::new();
+    scrolled_window.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Always);
+    scrolled_window.set_child(Some(&dialogs));
     dialogs.add_css_class("dialogs");
     dialogs.set_vexpand(true);
-    grid.attach(&dialogs, 0, 0, 1, 1);
+    grid.attach(&scrolled_window, 0, 0, 1, 1);
     grid.attach(&main_window, 1, 0, 1, 1);
     let listbox = gtk::ListBox::new();
     dialogs.append(&listbox);
@@ -189,15 +301,11 @@ async fn async_main(
     //
     // The design's annoying to use for trivial sequential tasks, but is otherwise scalable.
     let main_handle = client.clone();
-    let mut dialogs = main_handle.iter_dialogs();
-    let mut dialogs_list: Vec<grammers_client::types::Dialog> = Vec::new();
-    while let Some(dialog) = dialogs.next().await.unwrap() {
-        dialogs_list.push(dialog);
-    }
-    sender.send(InterfaceMessage::Dialogs(dialogs_list));
+    let dialogs = main_handle.iter_dialogs();
+    sender.send(InterfaceMessage::Dialogs(dialogs));
 
     while let Some(update) = main_handle.next_update().await? {
-        let client_handle = Arc::new(client.clone());
+        //let client_handle = Arc::new(client.clone());
         match update {
             grammers_client::Update::NewMessage(message) => {
                 sender.send(InterfaceMessage::NewMessage(message));
