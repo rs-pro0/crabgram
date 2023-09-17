@@ -44,11 +44,10 @@ async fn main() {
             .block_on(async_main(interface_sender))
             .unwrap()
     });
-    let mut dialog_global_list: Vec<grammers_client::types::Dialog> = Vec::new();
-    let mut dialog_pinned_global_list: Vec<grammers_client::types::Dialog> = Vec::new();
+    let mut dialog_count: i32 = 0;
+    let mut pinned_dialog_count: i32 = 0;
     let dialog_element_list: Vec<gtk::ListBoxRow> = Vec::new();
-    let dialog_element_list_mutex: Arc<Mutex<Vec<gtk::ListBoxRow>>> =
-        Arc::new(Mutex::new(dialog_element_list));
+    let dialog_element_list_mutex: Mutex<Vec<gtk::ListBoxRow>> = Mutex::new(dialog_element_list);
     let application_clone = application.clone();
 
     interface_receiver.attach(None, move |msg| {
@@ -68,51 +67,46 @@ async fn main() {
             unsafe { dialogs_element.first_child().unwrap().unsafe_cast() };
         match msg {
             InterfaceMessage::NewMessage(message) => {
-                let dialog_arc_clone = Arc::clone(&dialog_element_list_mutex);
-                let dialog_element_list_lock = dialog_arc_clone.lock().unwrap();
+                let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 for dialog in dialog_element_list_lock.iter() {
                     /*let label: gtk::Label =
                     unsafe { dialog.child().unwrap().last_child().unwrap().unsafe_cast() };*/
                     //println!("{}", label.text());
-                    if let Some(mut dt) =
-                        unsafe { dialog.data::<grammers_client::types::Dialog>("dialog") }
-                    {
-                        let data = unsafe { dt.as_mut() };
-                        if data.chat().id() == message.chat().id() {
-                            let dialogs_listbox_clone = dialogs_listbox.clone();
-                            dialogs_listbox_clone.remove(dialog);
-                            if data.dialog.pinned() {
-                                dialogs_listbox_clone.insert(dialog, 0);
-                            } else {
-                                dialogs_listbox_clone
-                                    .insert(dialog, dialog_pinned_global_list.len() as i32);
+                    let data = unsafe {
+                        dialog
+                            .data::<grammers_client::types::Dialog>("dialog")
+                            .unwrap()
+                            .as_mut()
+                    };
+                    if data.chat().id() == message.chat().id() {
+                        let dialogs_listbox_clone = dialogs_listbox.clone();
+                        let children = dialog.observe_children();
+                        for (index, child) in children.into_iter().enumerate() {
+                            if index == 1 {
+                                let message_label: gtk::Label =
+                                    unsafe { child.unwrap().unsafe_cast() };
+                                /*match &data.last_message {
+                                    Some(last_message) => {
+                                        if &message.date() > &last_message.date() {
+                                            data.last_message = Some(message.clone());
+                                        }
+                                    }
+                                    None => {
+                                        data.last_message = Some(message.clone());
+                                    }
+                                }
+                                match message_labeler(&data.last_message) {
+                                    Some(text) => message_label.set_text(&text),
+                                    None => {}
+                                }
+                                */
                             }
                         }
-                    } else {
-                        println!("empty data");
-                    }
-                }
-                if message.pinned() {
-                    for dialog_index in 0..dialog_pinned_global_list.len() {
-                        if dialog_pinned_global_list[dialog_index].chat().id()
-                            == message.chat().id()
-                        {
-                            dialog_pinned_global_list[dialog_index].last_message =
-                                Some(message.clone());
-                            dialog_pinned_global_list
-                                .push(dialog_global_list[dialog_index].clone());
-                            dialog_pinned_global_list.remove(dialog_index);
-                            break;
+                        if !data.dialog.pinned() {
+                            dialogs_listbox_clone.remove(dialog);
+                            dialogs_listbox_clone.insert(dialog, pinned_dialog_count);
                         }
-                    }
-                } else {
-                    for dialog_index in 0..dialog_global_list.len() {
-                        if dialog_global_list[dialog_index].chat().id() == message.chat().id() {
-                            dialog_global_list[dialog_index].last_message = Some(message.clone());
-                            dialog_global_list.push(dialog_global_list[dialog_index].clone());
-                            dialog_global_list.remove(dialog_index);
-                            break;
-                        }
+                        break;
                     }
                 }
                 /*println!(
@@ -122,23 +116,25 @@ async fn main() {
                 );*/
             }
             InterfaceMessage::Dialogs(mut dialogs) => {
-                dialog_global_list.clear();
+                let mut dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
+                let mut pinned_dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
                 futures::executor::block_on(async {
                     while let Some(dialog) = dialogs.next().await.unwrap() {
                         if dialog.dialog.pinned() {
-                            dialog_pinned_global_list.push(dialog);
+                            pinned_dialog_list.push(dialog);
                         } else {
-                            dialog_global_list.push(dialog);
+                            dialog_list.push(dialog);
                         }
                     }
                 });
-                dialog_global_list.reverse();
-                dialog_pinned_global_list.reverse();
-                let dialog_arc_clone = Arc::clone(&dialog_element_list_mutex);
-                let mut dialog_element_list_lock = dialog_arc_clone.lock().unwrap();
+                dialog_list.reverse();
+                pinned_dialog_list.reverse();
+                dialog_count = dialog_list.len() as i32;
+                pinned_dialog_count = pinned_dialog_list.len() as i32;
+                let mut dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 create_dialogs(
-                    &dialog_global_list,
-                    &dialog_pinned_global_list,
+                    dialog_list,
+                    pinned_dialog_list,
                     &mut dialog_element_list_lock,
                     dialogs_listbox.clone(),
                 );
@@ -149,9 +145,20 @@ async fn main() {
     application.run();
 }
 
+
+fn message_labeler(message: &Option<grammers_client::types::Message>) -> Option<String> {
+    match message {
+        Some(msg) => {
+            let txt = msg.text().trim().replace('\n', " ");
+            Some(txt)
+        }
+        None => None,
+    }
+}
+
 fn create_dialogs(
-    dialogs: &Vec<grammers_client::types::Dialog>,
-    pinned_dialogs: &Vec<grammers_client::types::Dialog>,
+    dialogs: Vec<grammers_client::types::Dialog>,
+    pinned_dialogs: Vec<grammers_client::types::Dialog>,
     dialog_elements: &mut Vec<gtk::ListBoxRow>,
     dialogs_listbox: gtk::ListBox,
 ) {
@@ -173,8 +180,16 @@ fn create_dialogs(
             }
             _ => chat.name().to_string(),
         };
-        let label = gtk::Label::new(Some(&label_text));
-        row_box.append(&label);
+        let dialog_name = gtk::Label::new(Some(&label_text));
+        let message_label = gtk::Label::new(message_labeler(&dialog.last_message).as_deref());
+        message_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        row_box.set_orientation(gtk::Orientation::Vertical);
+        row_box.set_hexpand(false);
+        dialog_name.set_halign(gtk::Align::Start);
+        dialog_name.add_css_class("dialog_label");
+        message_label.set_halign(gtk::Align::Start);
+        row_box.append(&dialog_name);
+        row_box.append(&message_label);
         row.set_child(Some(&row_box));
         dialogs_listbox.append(&row);
         unsafe {
