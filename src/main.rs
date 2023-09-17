@@ -68,6 +68,7 @@ async fn main() {
             unsafe { dialogs_element.first_child().unwrap().unsafe_cast() };
         match msg {
             InterfaceMessage::NewMessage(message) => {
+                //println!("Received {}", message.text());
                 let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 for dialog in dialog_element_list_lock.iter() {
                     /*let label: gtk::Label =
@@ -81,24 +82,24 @@ async fn main() {
                     };
                     if data.chat().id() == message.chat().id() {
                         let dialogs_listbox_clone = dialogs_listbox.clone();
-                        let dialog_grid: gtk::Grid = unsafe {dialog.child().unwrap().unsafe_cast()};
+                        let dialog_grid: gtk::Grid =
+                            unsafe { dialog.child().unwrap().unsafe_cast() };
                         let message_label: gtk::Label =
                             unsafe { dialog_grid.child_at(1, 1).unwrap().unsafe_cast() };
-                        /*match &data.last_message {
-                          Some(last_message) => {
-                          if &message.date() > &last_message.date() {
-                          data.last_message = Some(message.clone());
-                          }
-                          }
-                          None => {
-                          data.last_message = Some(message.clone());
-                          }
-                          }
-                          match message_labeler(&data.last_message) {
-                          Some(text) => message_label.set_text(&text),
-                          None => {}
-                          }
-                          */
+                        match &data.last_message {
+                            Some(last_message) => {
+                                if &message.id() > &last_message.id() {
+                                    data.last_message = Some(message.clone());
+                                }
+                            }
+                            None => {
+                                data.last_message = Some(message.clone());
+                            }
+                        }
+                        match message_labeler(&data.last_message) {
+                            Some(text) => message_label.set_text(&text),
+                            None => {}
+                        }
                         if !data.dialog.pinned() {
                             dialogs_listbox_clone.remove(dialog);
                             dialogs_listbox_clone.insert(dialog, pinned_dialog_count);
@@ -317,6 +318,7 @@ async fn async_main(
         //let client_handle = Arc::new(client.clone());
         match update {
             grammers_client::Update::NewMessage(message) => {
+                //println!("Sent message: {}", message.text());
                 sender.send(InterfaceMessage::NewMessage(message));
             }
             _ => {}
