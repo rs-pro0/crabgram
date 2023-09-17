@@ -280,7 +280,6 @@ async fn async_main(
     .await?;
     println!("Connected!");
 
-    // If we can't save the session, sign out once we're done.
     let mut sign_out = false;
 
     if !client.is_authorized().await? {
@@ -291,8 +290,9 @@ async fn async_main(
         let signed_in = client.sign_in(&token, &code).await;
         match signed_in {
             Err(grammers_client::SignInError::PasswordRequired(password_token)) => {
-                // Note: this `prompt` method will echo the password in the console.
-                //       Real code might want to use a better way to handle this.
+                // This is a login from example of grammers, because I don't want to implement
+                // login right now(I will do it in future)
+                // TODO: implement login system
                 let hint = password_token.hint().unwrap_or("None");
                 let prompt_message = format!("Enter the password (hint {}): ", &hint);
                 let password = prompt(prompt_message.as_str())?;
@@ -317,13 +317,6 @@ async fn async_main(
         }
     }
 
-    // Obtain a `ClientHandle` to perform remote calls while `Client` drives the connection.
-    //
-    // This handle can be `clone()`'d around and freely moved into other tasks, so you can invoke
-    // methods concurrently if you need to. While you do this, the single owned `client` is the
-    // one that communicates with the network.
-    //
-    // The design's annoying to use for trivial sequential tasks, but is otherwise scalable.
     let main_handle = client.clone();
     let dialogs = main_handle.iter_dialogs();
     sender.send(InterfaceMessage::Dialogs(dialogs));
@@ -339,7 +332,6 @@ async fn async_main(
     }
 
     if sign_out {
-        // TODO revisit examples and get rid of "handle references" (also, this panics)
         drop(client.sign_out_disconnect().await);
     }
 
