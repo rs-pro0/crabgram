@@ -31,10 +31,6 @@ async fn main() {
         glib::Sender<InterfaceMessage>,
         glib::Receiver<InterfaceMessage>,
     ) = glib::MainContext::channel(glib::Priority::DEFAULT);
-    let (api_sender, api_receiver): (
-        glib::Sender<ApiMessage>,
-        glib::Receiver<ApiMessage>,
-    ) = glib::MainContext::channel(glib::Priority::DEFAULT);
     let application = gtk::Application::builder()
         .application_id("crabgram")
         .build();
@@ -45,7 +41,7 @@ async fn main() {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(async_main(interface_sender, api_receiver))
+            .block_on(async_main(interface_sender))
             .unwrap()
     });
     let mut dialog_count: i32 = 0;
@@ -53,6 +49,7 @@ async fn main() {
     let dialog_element_list: Vec<gtk::ListBoxRow> = Vec::new();
     let dialog_element_list_mutex: Mutex<Vec<gtk::ListBoxRow>> = Mutex::new(dialog_element_list);
     let application_clone = application.clone();
+    let mut interface_handle: Mutex<Option<grammers_client::Client>> = Mutex::new(None);
 
     interface_receiver.attach(None, move |msg| {
         let grid_base = application_clone.windows()[0].child().unwrap();
@@ -119,7 +116,9 @@ async fn main() {
                     message.chat().name()
                 );*/
             }
-            InterfaceMessage::Dialogs(mut dialogs) => {
+            InterfaceMessage::InitialSetup(mut dialogs, client_handle) => {
+                let mut interface_handle_lock = interface_handle.lock().unwrap();
+                *interface_handle_lock = Some(client_handle);
                 let mut dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
                 let mut pinned_dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
                 futures::executor::block_on(async {
@@ -206,17 +205,15 @@ fn create_dialogs(
 enum InterfaceMessage {
     NewMessage(grammers_client::types::Message),
     //Dialogs(Vec<grammers_client::types::Dialog>),
-    Dialogs(
+    InitialSetup(
         grammers_client::types::IterBuffer<
             grammers_tl_types::functions::messages::GetDialogs,
             grammers_client::types::Dialog,
         >,
+        grammers_client::Client
     ),
 }
 
-
-enum ApiMessage {
-}
 
 fn load_css() {
     // Load the CSS file and add it to the provider
@@ -260,7 +257,6 @@ fn build_ui(application: &gtk::Application) {
 
 async fn async_main(
     sender: glib::Sender<InterfaceMessage>,
-    receiver: glib::Receiver<ApiMessage>
 ) -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     SimpleLogger::new()
@@ -317,11 +313,12 @@ async fn async_main(
         }
     }
 
-    let main_handle = client.clone();
-    let dialogs = main_handle.iter_dialogs();
-    sender.send(InterfaceMessage::Dialogs(dialogs));
+    let update_handle = client.clone();
+    let interface_handle = client.clone();
+    let dialogs = interface_handle.iter_dialogs();
+    sender.send(InterfaceMessage::InitialSetup(dialogs, interface_handle));
 
-    while let Some(update) = main_handle.next_update().await? {
+    while let Some(update) = update_handle.next_update().await? {
         //let client_handle = Arc::new(client.clone());
         match update {
             grammers_client::Update::NewMessage(message) => {
