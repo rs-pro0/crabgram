@@ -31,6 +31,10 @@ async fn main() {
         glib::Sender<InterfaceMessage>,
         glib::Receiver<InterfaceMessage>,
     ) = glib::MainContext::channel(glib::Priority::DEFAULT);
+    let (api_sender, api_receiver): (
+        glib::Sender<ApiMessage>,
+        glib::Receiver<ApiMessage>,
+    ) = glib::MainContext::channel(glib::Priority::DEFAULT);
     let application = gtk::Application::builder()
         .application_id("crabgram")
         .build();
@@ -41,7 +45,7 @@ async fn main() {
             .enable_all()
             .build()
             .unwrap()
-            .block_on(async_main(interface_sender))
+            .block_on(async_main(interface_sender, api_receiver))
             .unwrap()
     });
     let mut dialog_count: i32 = 0;
@@ -210,6 +214,10 @@ enum InterfaceMessage {
     ),
 }
 
+
+enum ApiMessage {
+}
+
 fn load_css() {
     // Load the CSS file and add it to the provider
     let provider = gtk::CssProvider::new();
@@ -252,6 +260,7 @@ fn build_ui(application: &gtk::Application) {
 
 async fn async_main(
     sender: glib::Sender<InterfaceMessage>,
+    receiver: glib::Receiver<ApiMessage>
 ) -> Result<(), Box<dyn std::error::Error>> {
     dotenv().ok();
     SimpleLogger::new()
