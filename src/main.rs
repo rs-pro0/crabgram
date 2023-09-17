@@ -49,7 +49,7 @@ async fn main() {
     let dialog_element_list: Vec<gtk::ListBoxRow> = Vec::new();
     let dialog_element_list_mutex: Mutex<Vec<gtk::ListBoxRow>> = Mutex::new(dialog_element_list);
     let application_clone = application.clone();
-    let mut interface_handle: Mutex<Option<grammers_client::Client>> = Mutex::new(None);
+    let interface_handle: Mutex<Option<grammers_client::Client>> = Mutex::new(None);
 
     interface_receiver.attach(None, move |msg| {
         let grid_base = application_clone.windows()[0].child().unwrap();
@@ -281,7 +281,7 @@ async fn async_main(
     if !client.is_authorized().await? {
         println!("Signing in...");
         let phone = prompt("Enter your phone number (international format): ")?;
-        let token = client.request_login_code(&phone, api_id, &api_hash).await?;
+        let token = client.request_login_code(&phone).await?;
         let code = prompt("Enter the code you received: ")?;
         let signed_in = client.sign_in(&token, &code).await;
         match signed_in {
