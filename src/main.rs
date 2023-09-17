@@ -81,28 +81,24 @@ async fn main() {
                     };
                     if data.chat().id() == message.chat().id() {
                         let dialogs_listbox_clone = dialogs_listbox.clone();
-                        let children = dialog.observe_children();
-                        for (index, child) in children.into_iter().enumerate() {
-                            if index == 1 {
-                                let message_label: gtk::Label =
-                                    unsafe { child.unwrap().unsafe_cast() };
-                                /*match &data.last_message {
-                                    Some(last_message) => {
-                                        if &message.date() > &last_message.date() {
-                                            data.last_message = Some(message.clone());
-                                        }
-                                    }
-                                    None => {
-                                        data.last_message = Some(message.clone());
-                                    }
-                                }
-                                match message_labeler(&data.last_message) {
-                                    Some(text) => message_label.set_text(&text),
-                                    None => {}
-                                }
-                                */
-                            }
-                        }
+                        let dialog_grid: gtk::Grid = unsafe {dialog.child().unwrap().unsafe_cast()};
+                        let message_label: gtk::Label =
+                            unsafe { dialog_grid.child_at(1, 1).unwrap().unsafe_cast() };
+                        /*match &data.last_message {
+                          Some(last_message) => {
+                          if &message.date() > &last_message.date() {
+                          data.last_message = Some(message.clone());
+                          }
+                          }
+                          None => {
+                          data.last_message = Some(message.clone());
+                          }
+                          }
+                          match message_labeler(&data.last_message) {
+                          Some(text) => message_label.set_text(&text),
+                          None => {}
+                          }
+                          */
                         if !data.dialog.pinned() {
                             dialogs_listbox_clone.remove(dialog);
                             dialogs_listbox_clone.insert(dialog, pinned_dialog_count);
@@ -148,7 +144,6 @@ async fn main() {
     application.run();
 }
 
-
 fn message_labeler(message: &Option<grammers_client::types::Message>) -> Option<String> {
     match message {
         Some(msg) => {
@@ -168,8 +163,8 @@ fn create_dialogs(
     dialogs_listbox.remove_all();
     for dialog in pinned_dialogs.iter().rev().chain(dialogs.iter().rev()) {
         let row = gtk::ListBoxRow::new();
-        let row_box = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        row_box.add_css_class("dialog");
+        let row_grid = gtk::Grid::new();
+        row_grid.add_css_class("dialog");
         let chat = dialog.chat.clone();
         let label_text = match chat {
             grammers_client::types::Chat::User(user) => {
@@ -184,16 +179,17 @@ fn create_dialogs(
             _ => chat.name().to_string(),
         };
         let dialog_name = gtk::Label::new(Some(&label_text));
+        let profile_picture = gtk::Image::new();
         let message_label = gtk::Label::new(message_labeler(&dialog.last_message).as_deref());
         message_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
-        row_box.set_orientation(gtk::Orientation::Vertical);
-        row_box.set_hexpand(false);
+        row_grid.set_hexpand(false);
         dialog_name.set_halign(gtk::Align::Start);
         dialog_name.add_css_class("dialog_label");
         message_label.set_halign(gtk::Align::Start);
-        row_box.append(&dialog_name);
-        row_box.append(&message_label);
-        row.set_child(Some(&row_box));
+        row_grid.attach(&profile_picture, 0, 0, 1, 2);
+        row_grid.attach(&dialog_name, 1, 0, 1, 1);
+        row_grid.attach(&message_label, 1, 1, 1, 1);
+        row.set_child(Some(&row_grid));
         dialogs_listbox.append(&row);
         unsafe {
             row.set_data("dialog", dialog.clone());
@@ -210,10 +206,9 @@ enum InterfaceMessage {
             grammers_tl_types::functions::messages::GetDialogs,
             grammers_client::types::Dialog,
         >,
-        grammers_client::Client
+        grammers_client::Client,
     ),
 }
-
 
 fn load_css() {
     // Load the CSS file and add it to the provider
