@@ -17,3 +17,4 @@ futures = "0.3.28"
 sqlx = { version = "0.7", features = [ "runtime-tokio", "sqlite" ] }
 gdk-pixbuf = "0.18.0"
 colors-transform = "0.2.11"
+rayon = "1.8.0"

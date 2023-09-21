@@ -38,7 +38,6 @@ async fn main() {
         .await
         .unwrap();
     let mut connection = pool.acquire().await.unwrap();
-    let tokio_handle = tokio::runtime::Handle::current();
     let query_result = sqlx::query!(r#"SELECT * FROM Photo"#)
         .fetch_all(&mut *connection)
         .await
@@ -93,12 +92,8 @@ async fn main() {
             unsafe { dialogs_element.first_child().unwrap().unsafe_cast() };
         match msg {
             InterfaceMessage::NewMessage(message) => {
-                //println!("Received {}", message.text());
                 let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 for dialog in dialog_element_list_lock.iter() {
-                    /*let label: gtk::Label =
-                    unsafe { dialog.child().unwrap().last_child().unwrap().unsafe_cast() };*/
-                    //println!("{}", label.text());
                     let data = unsafe {
                         dialog
                             .data::<grammers_client::types::Dialog>("dialog")
@@ -132,11 +127,6 @@ async fn main() {
                         break;
                     }
                 }
-                /*println!(
-                    "got message {} from {}",
-                    message.text(),
-                    message.chat().name()
-                );*/
             }
             InterfaceMessage::InitialSetup(mut dialogs, client_handle) => {
                 //let interface_handle_arc = Arc::clone(&interface_handle);
@@ -165,7 +155,6 @@ async fn main() {
                     dialogs_listbox.clone(),
                     interface_handle.clone(),
                     pool.clone(),
-                    tokio_handle.clone(),
                     interface_sender_clone,
                     BACKGROUND_COLORS,
                 );
@@ -212,11 +201,11 @@ fn create_dialogs(
     dialogs_listbox: gtk::ListBox,
     client_handle: Option<grammers_client::Client>,
     pool: sqlx::pool::Pool<sqlx::Sqlite>,
-    tokio_handle: tokio::runtime::Handle,
     interface_sender: glib::Sender<InterfaceMessage>,
     backround_colors: [Rgb; COLORS_NUMBER],
 ) {
     let mut connection = futures::executor::block_on(async { pool.acquire().await }).unwrap();
+    let mut futures: Vec<_> = Vec::new();
     dialogs_listbox.remove_all();
     for dialog in pinned_dialogs.iter().rev().chain(dialogs.iter().rev()) {
         let row = gtk::ListBoxRow::new();
@@ -313,27 +302,25 @@ fn create_dialogs(
                 Err(_) => {
                     photo_path = format!("cache/{}_small", photo_id);
                     let client_clone = client_handle.clone().unwrap();
-                    let mut conn =
-                        futures::executor::block_on(async { pool.acquire().await.unwrap() });
+                    let pool_clone = pool.clone();
                     let photo_path_clone = photo_path.clone();
                     let photo_id = photo_id;
-                    let tokio_handle_clone = tokio_handle.clone();
                     let interface_sender_clone = interface_sender.clone();
                     let chat_id = dialog.chat().id();
-                    thread::spawn(move || {
-                        tokio_handle_clone.spawn(async move {
-                            let _ = client_clone
-                                .download_media(&downloadable, photo_path_clone)
-                                .await;
-                            let _ = sqlx::query!(
-                                r#"INSERT INTO Photo(photo_id, big) VALUES(?1, false)"#,
-                                photo_id
-                            )
-                            .execute(&mut *conn)
+                    let future = async move {
+                        let _ = client_clone
+                            .download_media(&downloadable, photo_path_clone)
                             .await;
-                            interface_sender_clone.send(InterfaceMessage::ImageUpdate(chat_id));
-                        });
-                    });
+                        let mut conn = pool_clone.acquire().await.unwrap();
+                        let _ = sqlx::query!(
+                            r#"INSERT INTO Photo(photo_id, big) VALUES(?1, false)"#,
+                            photo_id
+                        )
+                        .execute(&mut *conn)
+                        .await;
+                        interface_sender_clone.send(InterfaceMessage::ImageUpdate(chat_id));
+                    };
+                    futures.push(future);
                 }
             };
         }
@@ -410,6 +397,16 @@ fn create_dialogs(
         }
         dialog_elements.push(row);
     }
+    thread::spawn(move || {
+        let runtime = runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+        runtime.block_on(async {
+            let handles: Vec<_> = futures.into_iter().map(|f| tokio::spawn(f)).collect();
+            for handle in handles{
+                tokio::join!(handle);
+            }
+        });
+
+    });
 }
 
 enum InterfaceMessage {
@@ -533,7 +530,6 @@ async fn async_main(
         //let client_handle = Arc::new(client.clone());
         match update {
             grammers_client::Update::NewMessage(message) => {
-                //println!("Sent message: {}", message.text());
                 sender.send(InterfaceMessage::NewMessage(message));
             }
             _ => {}
