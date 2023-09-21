@@ -414,7 +414,7 @@ fn create_dialogs(
             .build()
             .unwrap();
         runtime.block_on(async {
-            for future in futures{
+            for future in futures {
                 tokio::join!(tokio::spawn(future));
             }
         });
