@@ -14,3 +14,6 @@ dotenv = "0.15.0"
 futures-util = "0.3.28"
 tokio = { version = "1.30.0", features = ["full"] }
 futures = "0.3.28"
+sqlx = { version = "0.7", features = [ "runtime-tokio", "sqlite" ] }
+gdk-pixbuf = "0.18.0"
+colors-transform = "0.2.11"
