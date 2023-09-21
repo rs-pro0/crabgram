@@ -308,9 +308,20 @@ fn create_dialogs(
                     let interface_sender_clone = interface_sender.clone();
                     let chat_id = dialog.chat().id();
                     let future = async move {
-                        let _ = client_clone
-                            .download_media(&downloadable, photo_path_clone)
-                            .await;
+                        /*while let Err(e) = */
+                        client_clone
+                            .download_media(&downloadable, photo_path_clone.clone())
+                            .await; /*
+                                    {
+                                        if let Some(inner_err) = e.get_ref() {
+                                            if let Some(invocation_error) = inner_err.downcast_ref::<grammers_client::types::iter_buffer::InvocationError>(){
+                                                if let grammers_client::types::iter_buffer::InvocationError::Rpc(rpc_error) = invocation_error{
+                                                    rpc_error.value
+                                                }
+                                            }
+                                        }
+                                    }*/
+
                         let mut conn = pool_clone.acquire().await.unwrap();
                         let _ = sqlx::query!(
                             r#"INSERT INTO Photo(photo_id, big) VALUES(?1, false)"#,
@@ -398,14 +409,16 @@ fn create_dialogs(
         dialog_elements.push(row);
     }
     thread::spawn(move || {
-        let runtime = runtime::Builder::new_multi_thread().worker_threads(4).enable_all().build().unwrap();
+        let runtime = runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
         runtime.block_on(async {
-            let handles: Vec<_> = futures.into_iter().map(|f| tokio::spawn(f)).collect();
-            for handle in handles{
-                tokio::join!(handle);
+            for future in futures{
+                tokio::join!(tokio::spawn(future));
             }
         });
-
+        println!("Finished doing stuff");
     });
 }
 
