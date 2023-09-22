@@ -7,7 +7,7 @@ use simple_logger::SimpleLogger;
 use std::env;
 use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
-use std::sync::{Arc, Mutex};
+use std::sync::Mutex;
 use std::thread;
 use tokio::runtime;
 
@@ -37,11 +37,6 @@ async fn main() {
     let pool = sqlx::sqlite::SqlitePool::connect("sqlite:crabgram.db")
         .await
         .unwrap();
-    let mut connection = pool.acquire().await.unwrap();
-    let query_result = sqlx::query!(r#"SELECT * FROM Photo"#)
-        .fetch_all(&mut *connection)
-        .await
-        .unwrap();
     let application = gtk::Application::builder()
         .application_id("crabgram")
         .build();
@@ -56,14 +51,14 @@ async fn main() {
             .block_on(async_main(interface_sender_clone))
             .unwrap()
     });
-    let mut dialog_count: i32 = 0;
     let mut pinned_dialog_count: i32 = 0;
     let dialog_element_list: Vec<gtk::ListBoxRow> = Vec::new();
     let dialog_element_list_mutex: Mutex<Vec<gtk::ListBoxRow>> = Mutex::new(dialog_element_list);
     let application_clone = application.clone();
     let mut interface_handle: Option<grammers_client::Client> = None;
+    let active_chat: Mutex<i64> = Mutex::new(0);
 
-    let BACKGROUND_COLORS: [colors_transform::Rgb; COLORS_NUMBER] = [
+    let background_colors: [colors_transform::Rgb; COLORS_NUMBER] = [
         Rgb::from_hex_str("#ff845e").unwrap(),
         Rgb::from_hex_str("#9ad164").unwrap(),
         Rgb::from_hex_str("#e5ca77").unwrap(),
@@ -129,8 +124,6 @@ async fn main() {
                 }
             }
             InterfaceMessage::InitialSetup(mut dialogs, client_handle) => {
-                //let interface_handle_arc = Arc::clone(&interface_handle);
-                //*interface_handle_arc = Some(client_handle);
                 interface_handle = Some(client_handle);
                 let mut dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
                 let mut pinned_dialog_list: Vec<grammers_client::types::Dialog> = Vec::new();
@@ -156,7 +149,7 @@ async fn main() {
                     interface_handle.clone(),
                     pool.clone(),
                     interface_sender_clone,
-                    BACKGROUND_COLORS,
+                    background_colors,
                 );
             }
             InterfaceMessage::ImageUpdate(chat_id) => {
@@ -176,6 +169,33 @@ async fn main() {
                         dialog_image.queue_draw();
                         break;
                     }
+                }
+            }
+            InterfaceMessage::MakeChatActive(chat_id) => {
+                // TODO: making chat active
+                let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
+                let (mut found_previous, mut found_new) = (false, false);
+                let mut active_chat_lock = active_chat.lock().unwrap();
+                if chat_id != *active_chat_lock {
+                    for dialog in dialog_element_list_lock.iter() {
+                        let data = unsafe {
+                            dialog
+                                .data::<grammers_client::types::Dialog>("dialog")
+                                .unwrap()
+                                .as_mut()
+                        };
+                        if data.chat().id() == chat_id {
+                            found_new = true;
+                            dialog.child().unwrap().add_css_class("dialog_active");
+                        } else if data.chat().id() == *active_chat_lock {
+                            found_previous = true;
+                            dialog.child().unwrap().remove_css_class("dialog_active");
+                        }
+                        if found_previous && found_new {
+                            break;
+                        }
+                    }
+                    *active_chat_lock = chat_id;
                 }
             }
         }
@@ -214,6 +234,13 @@ fn create_dialogs(
             .css_classes(vec!["dialog"])
             .hexpand(false)
             .build();
+        let interface_sender_clone = interface_sender.clone();
+        let chat_id = dialog.chat().id();
+        let controller = gtk::GestureClick::new();
+        controller.connect_pressed(move |_, _, _, _| {
+            let _ = interface_sender_clone.send(InterfaceMessage::MakeChatActive(chat_id));
+        });
+        row.add_controller(controller);
         let chat = dialog.chat.clone();
         let label_text = match chat.clone() {
             grammers_client::types::Chat::User(user) => {
@@ -309,7 +336,7 @@ fn create_dialogs(
                     let chat_id = dialog.chat().id();
                     let future = async move {
                         /*while let Err(e) = */
-                        client_clone
+                        let _ = client_clone
                             .download_media(&downloadable, photo_path_clone.clone())
                             .await; /*
                                     {
@@ -329,7 +356,7 @@ fn create_dialogs(
                         )
                         .execute(&mut *conn)
                         .await;
-                        interface_sender_clone.send(InterfaceMessage::ImageUpdate(chat_id));
+                        let _ = interface_sender_clone.send(InterfaceMessage::ImageUpdate(chat_id));
                     };
                     futures.push(future);
                 }
@@ -347,7 +374,7 @@ fn create_dialogs(
         let color_index = (dialog.chat().id() % 7) as usize;
         let color = backround_colors[color_index];
         let first_letter = label_text.chars().nth(0).unwrap();
-        profile_picture.set_draw_func(move |area, context, width, height| {
+        profile_picture.set_draw_func(move |area, context, _, _| {
             let parent_height = area.parent().unwrap().height();
             area.set_size_request(parent_height, -1);
             let area_width = area.width() as f64;
@@ -365,7 +392,7 @@ fn create_dialogs(
                     2.0 * std::f64::consts::PI,
                 );
                 context.clip();
-                context.paint();
+                let _ = context.paint();
             } else {
                 context.set_source_rgb(
                     color.get_red() as f64 / 255.0,
@@ -379,7 +406,7 @@ fn create_dialogs(
                     0.0,
                     2.0 * std::f64::consts::PI,
                 );
-                context.fill();
+                let _ = context.fill();
                 context.set_source_rgb(1.0, 1.0, 1.0);
                 context.set_font_size(24.0);
                 let text_extents = context.text_extents(&first_letter.to_string()).unwrap();
@@ -387,7 +414,7 @@ fn create_dialogs(
                     area_width / 2.0 - text_extents.x_bearing() - text_extents.width() / 2.0,
                     area_height / 2.0 - text_extents.y_bearing() - text_extents.height() / 2.0,
                 );
-                context.show_text(&first_letter.to_string());
+                let _ = context.show_text(&first_letter.to_string());
             }
         });
         let mut message_label_builder = gtk::Label::builder()
@@ -415,7 +442,7 @@ fn create_dialogs(
             .unwrap();
         runtime.block_on(async {
             for future in futures {
-                tokio::join!(tokio::spawn(future));
+                let _ = tokio::join!(tokio::spawn(future));
             }
         });
         println!("Finished doing stuff");
@@ -424,7 +451,6 @@ fn create_dialogs(
 
 enum InterfaceMessage {
     NewMessage(grammers_client::types::Message),
-    //Dialogs(Vec<grammers_client::types::Dialog>),
     InitialSetup(
         grammers_client::types::IterBuffer<
             grammers_tl_types::functions::messages::GetDialogs,
@@ -432,7 +458,8 @@ enum InterfaceMessage {
         >,
         grammers_client::Client,
     ),
-    ImageUpdate(i64),
+    ImageUpdate(i64),    // This i64 is id of chat where image should be updated
+    MakeChatActive(i64), // This i64 is id of chat which should become active
 }
 
 fn load_css() {
@@ -453,9 +480,12 @@ fn build_ui(application: &gtk::Application) {
     window.set_default_size(350, 70);
 
     let grid = gtk::Grid::new();
-    let main_window = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    main_window.add_css_class("main_window");
-    main_window.set_hexpand(true);
+    let main_window = gtk::Box::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .spacing(0)
+        .css_classes(vec!["main_window"])
+        .hexpand(true)
+        .build();
     let dialogs = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let scrolled_window = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -537,13 +567,13 @@ async fn async_main(
     let update_handle = client.clone();
     let interface_handle = client.clone();
     let dialogs = interface_handle.iter_dialogs();
-    sender.send(InterfaceMessage::InitialSetup(dialogs, interface_handle));
+    let _ = sender.send(InterfaceMessage::InitialSetup(dialogs, interface_handle));
 
     while let Some(update) = update_handle.next_update().await? {
         //let client_handle = Arc::new(client.clone());
         match update {
             grammers_client::Update::NewMessage(message) => {
-                sender.send(InterfaceMessage::NewMessage(message));
+                let _ = sender.send(InterfaceMessage::NewMessage(message));
             }
             _ => {}
         }

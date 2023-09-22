@@ -1,18 +1,35 @@
 *{
     all: unset;
 }
+
 .dialogs {
     background-color: #17212B;
 }
+
 .dialog {
     background-color: #17212B;
     padding: 10px;
 }
+
+.dialog:hover{
+    background-color: #202B36;
+}
+
+.dialog_active{
+    background-color: #2B5278;
+}
+
+.dialog_active:hover{
+    background-color: #2B5278;
+}
+
 .main_window {
     background-color: #0E1621;
 }
+
 .dialog_label {
     font-weight: bold;
 }
+
 .profile_picture{
 }
