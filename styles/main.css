@@ -1,8 +1,12 @@
+*{
+    all: unset;
+}
 .dialogs {
     background-color: #17212B;
 }
 .dialog {
     background-color: #17212B;
+    padding: 10px;
 }
 .main_window {
     background-color: #0E1621;
