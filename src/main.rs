@@ -41,7 +41,9 @@ async fn main() {
         .application_id("crabgram")
         .build();
     application.connect_startup(|_| load_css());
-    application.connect_activate(build_ui);
+    let interface_sender_clone = interface_sender.clone();
+    application
+        .connect_activate(move |application| build_ui(application, interface_sender_clone.clone()));
     let interface_sender_clone = interface_sender.clone();
     thread::spawn(move || {
         runtime::Builder::new_current_thread()
@@ -56,7 +58,7 @@ async fn main() {
     let dialog_element_list_mutex: Mutex<Vec<gtk::ListBoxRow>> = Mutex::new(dialog_element_list);
     let application_clone = application.clone();
     let mut interface_handle: Option<grammers_client::Client> = None;
-    let active_chat: Mutex<i64> = Mutex::new(0);
+    let active_chat: Mutex<Option<i64>> = Mutex::new(None);
 
     let background_colors: [colors_transform::Rgb; COLORS_NUMBER] = [
         Rgb::from_hex_str("#ff845e").unwrap(),
@@ -172,10 +174,23 @@ async fn main() {
                 }
             }
             InterfaceMessage::MakeChatActive(chat_id) => {
-                // TODO: making chat active
                 let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 let (mut found_previous, mut found_new) = (false, false);
                 let mut active_chat_lock = active_chat.lock().unwrap();
+                let actual_chat_id = match chat_id {
+                    Some(chat_id) => chat_id,
+                    None => {
+                        found_new = true;
+                        -1
+                    }
+                };
+                let active_chat_value = match *active_chat_lock {
+                    Some(chat_id) => chat_id,
+                    None => {
+                        found_previous = true;
+                        -1
+                    }
+                };
                 if chat_id != *active_chat_lock {
                     for dialog in dialog_element_list_lock.iter() {
                         let data = unsafe {
@@ -184,10 +199,10 @@ async fn main() {
                                 .unwrap()
                                 .as_mut()
                         };
-                        if data.chat().id() == chat_id {
+                        if !found_new && data.chat().id() == actual_chat_id {
                             found_new = true;
                             dialog.child().unwrap().add_css_class("dialog_active");
-                        } else if data.chat().id() == *active_chat_lock {
+                        } else if !found_previous && data.chat().id() == active_chat_value {
                             found_previous = true;
                             dialog.child().unwrap().remove_css_class("dialog_active");
                         }
@@ -197,6 +212,67 @@ async fn main() {
                     }
                     *active_chat_lock = chat_id;
                 }
+                let main_window: gtk::Grid =
+                    unsafe { grid_base_grid.child_at(1, 0).unwrap().unsafe_cast() };
+                let overlay = main_window.child_at(0, 1).unwrap();
+                match *active_chat_lock {
+                    None => {
+                        overlay.set_visible(false);
+                    }
+                    Some(_) => {
+                        overlay.set_visible(true);
+                        let textview: gtk::TextView = unsafe {
+                            overlay
+                                .first_child()
+                                .unwrap()
+                                .first_child()
+                                .unwrap()
+                                .unsafe_cast()
+                        };
+                        textview.grab_focus();
+                    }
+                }
+            }
+            InterfaceMessage::SendMessage => {
+                let active_chat_lock = active_chat.lock().unwrap();
+                let main_window: gtk::Grid =
+                    unsafe { grid_base_grid.child_at(1, 0).unwrap().unsafe_cast() };
+                let overlay = main_window.child_at(0, 1).unwrap();
+                let textview: gtk::TextView = unsafe {
+                    overlay
+                        .first_child()
+                        .unwrap()
+                        .first_child()
+                        .unwrap()
+                        .unsafe_cast()
+                };
+                let buffer = textview.buffer();
+                if *active_chat_lock != None {
+                    let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), true);
+                    let trimmed_text = text.trim();
+                    if trimmed_text != "" {
+                        let chat_id = active_chat_lock.unwrap();
+                        let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
+                        for dialog in dialog_element_list_lock.iter() {
+                            let data = unsafe {
+                                dialog
+                                    .data::<grammers_client::types::Dialog>("dialog")
+                                    .unwrap()
+                                    .as_mut()
+                            };
+                            if data.chat().id() == chat_id {
+                                let client_handle = interface_handle.clone().unwrap();
+                                futures::executor::block_on(async {
+                                    let _ = client_handle
+                                        .send_message(data.chat().pack(), trimmed_text)
+                                        .await;
+                                });
+                                break;
+                            }
+                        }
+                    }
+                }
+                buffer.set_text("");
             }
         }
         glib::ControlFlow::Continue
@@ -236,11 +312,11 @@ fn create_dialogs(
             .build();
         let interface_sender_clone = interface_sender.clone();
         let chat_id = dialog.chat().id();
-        let controller = gtk::GestureClick::new();
-        controller.connect_pressed(move |_, _, _, _| {
-            let _ = interface_sender_clone.send(InterfaceMessage::MakeChatActive(chat_id));
+        let dialog_click_controller = gtk::GestureClick::new();
+        dialog_click_controller.connect_pressed(move |_, _, _, _| {
+            let _ = interface_sender_clone.send(InterfaceMessage::MakeChatActive(Some(chat_id)));
         });
-        row.add_controller(controller);
+        row.add_controller(dialog_click_controller);
         let chat = dialog.chat.clone();
         let label_text = match chat.clone() {
             grammers_client::types::Chat::User(user) => {
@@ -445,7 +521,6 @@ fn create_dialogs(
                 let _ = tokio::join!(tokio::spawn(future));
             }
         });
-        println!("Finished doing stuff");
     });
 }
 
@@ -458,8 +533,9 @@ enum InterfaceMessage {
         >,
         grammers_client::Client,
     ),
-    ImageUpdate(i64),    // This i64 is id of chat where image should be updated
-    MakeChatActive(i64), // This i64 is id of chat which should become active
+    ImageUpdate(i64), // This i64 is id of chat where image should be updated
+    MakeChatActive(Option<i64>), // This i64 is id of chat which should become active
+    SendMessage,
 }
 
 fn load_css() {
@@ -473,33 +549,94 @@ fn load_css() {
     );
 }
 
-fn build_ui(application: &gtk::Application) {
-    let window = gtk::ApplicationWindow::new(application);
-
-    window.set_title(Some("Crabgram"));
-    window.set_default_size(350, 70);
+fn build_ui(application: &gtk::Application, sender: glib::Sender<InterfaceMessage>) {
+    let window = gtk::ApplicationWindow::builder()
+        .application(application)
+        .title("Crabgram")
+        .default_width(640)
+        .default_height(480)
+        .build();
 
     let grid = gtk::Grid::new();
-    let main_window = gtk::Box::builder()
+
+    let main_window = gtk::Grid::builder()
         .orientation(gtk::Orientation::Horizontal)
-        .spacing(0)
         .css_classes(vec!["main_window"])
         .hexpand(true)
+        .vexpand(true)
         .build();
+    let message_view = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .vexpand(true)
+        .build();
+    let messsage_send_overlay = gtk::Overlay::builder()
+        .css_classes(vec!["message_send_overlay"])
+        .build();
+    let message_send_box = gtk::TextView::builder()
+        .css_classes(vec!["message_send_box"])
+        .hexpand(true)
+        .build();
+    let font_size = message_send_box
+        .pango_context()
+        .font_description()
+        .unwrap()
+        .size()
+        / gtk::pango::SCALE;
+    let message_send_scrollable = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
+        .child(&message_send_box)
+        .propagate_natural_height(true)
+        .max_content_height(font_size * 10)
+        .build();
+    let message_send_placeholder = gtk::Label::builder()
+        .label("Write a message...")
+        .css_classes(vec!["placeholder", "message_placeholder"])
+        .halign(gtk::Align::Start)
+        .can_target(false)
+        .hexpand(true)
+        .build();
+    let message_send_placeholder_clone = message_send_placeholder.clone();
+    let message_send_key_controller = gtk::EventControllerKey::new();
+    message_send_key_controller.connect_key_pressed(move |_, key, _, modifier| {
+        if key == gtk::gdk::Key::Return && !modifier.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+            let _ = sender.send(InterfaceMessage::SendMessage);
+            glib::Propagation::Stop
+        } else {
+            glib::Propagation::Proceed
+        }
+    });
+    message_send_box.add_controller(message_send_key_controller);
+    message_send_box.buffer().connect_changed(move |buffer| {
+        let value = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        if value == "" {
+            message_send_placeholder_clone.set_visible(true);
+        } else {
+            message_send_placeholder_clone.set_visible(false);
+        }
+    });
+    messsage_send_overlay.set_child(Some(&message_send_scrollable));
+    messsage_send_overlay.add_overlay(&message_send_placeholder);
+    messsage_send_overlay.set_visible(false);
+    main_window.attach(&message_view, 0, 0, 1, 1);
+    main_window.attach(&messsage_send_overlay, 0, 1, 1, 1);
+    grid.attach(&main_window, 1, 0, 1, 1);
+
     let dialogs = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    let scrolled_window = gtk::ScrolledWindow::builder()
+    let dialogs_scroll_window = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vscrollbar_policy(gtk::PolicyType::Always)
         .child(&dialogs)
         .css_classes(vec!["dialogs"])
         .vexpand(true)
         .build();
-    grid.attach(&scrolled_window, 0, 0, 1, 1);
-    grid.attach(&main_window, 1, 0, 1, 1);
-    let listbox = gtk::ListBox::builder()
+    grid.attach(&dialogs_scroll_window, 0, 0, 1, 1);
+    let dialog_listbox = gtk::ListBox::builder()
         .selection_mode(gtk::SelectionMode::None)
         .build();
-    dialogs.append(&listbox);
+    dialogs.append(&dialog_listbox);
 
     window.set_child(Some(&grid));
 
