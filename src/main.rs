@@ -263,9 +263,11 @@ async fn main() {
                             if data.chat().id() == chat_id {
                                 let client_handle = interface_handle.clone().unwrap();
                                 futures::executor::block_on(async {
-                                    let _ = client_handle
+                                    let message = client_handle
                                         .send_message(data.chat().pack(), trimmed_text)
-                                        .await;
+                                        .await
+                                        .unwrap();
+                                    interface_sender.send(InterfaceMessage::NewMessage(message))
                                 });
                                 break;
                             }
@@ -303,7 +305,7 @@ fn create_dialogs(
     let mut connection = futures::executor::block_on(async { pool.acquire().await }).unwrap();
     let mut futures: Vec<_> = Vec::new();
     dialogs_listbox.remove_all();
-    for dialog in pinned_dialogs.iter().rev().chain(dialogs.iter().rev()) {
+    for dialog in pinned_dialogs.iter().chain(dialogs.iter().rev()) {
         let row = gtk::ListBoxRow::new();
         let row_grid = gtk::Grid::builder()
             .column_spacing(10)
