@@ -28,6 +28,32 @@ fn prompt(message: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(line)
 }
 
+fn create_message_row(message: &grammers_client::types::Message) -> gtk::ListBoxRow {
+    let message_row = gtk::ListBoxRow::new();
+    let message_grid = gtk::Grid::builder().css_classes(vec!["message"]).build();
+    message_row.set_child(Some(&message_grid));
+    let message_label = gtk::Label::builder()
+        .halign(gtk::Align::Start)
+        .label(message.text())
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .build();
+    match message.chat() {
+        grammers_client::types::Chat::User(..) => {}
+        _ => {
+            let sender_label = gtk::Label::builder()
+                .label(match message.sender() {
+                    Some(sender) => sender.name().to_string(),
+                    None => String::new(),
+                })
+                .halign(gtk::Align::Start)
+                .build();
+            message_grid.attach(&sender_label, 0, 0, 1, 1);
+        }
+    }
+    message_grid.attach(&message_label, 0, 1, 1, 1);
+    message_row
+}
+
 #[tokio::main]
 async fn main() {
     let (interface_sender, interface_receiver): (
@@ -117,6 +143,47 @@ async fn main() {
                             Some(text) => message_label.set_text(&text),
                             None => {}
                         }
+                        let mut messages_data = unsafe {
+                            dialog
+                                .steal_data::<Vec<grammers_client::types::Message>>("messages")
+                                .unwrap()
+                        };
+                        let mut index = messages_data.len();
+                        loop {
+                            if index == 0 || messages_data[index - 1].id() < message.id() {
+                                messages_data.insert(index, message.clone());
+                                let active_chat_lock = active_chat.lock().unwrap();
+                                if *active_chat_lock == Some(data.chat().id()) {
+                                    let main_window: gtk::Grid = unsafe {
+                                        grid_base_grid.child_at(1, 0).unwrap().unsafe_cast()
+                                    };
+                                    let message_scrolled_window: gtk::ScrolledWindow = unsafe {
+                                        main_window.child_at(0, 0).unwrap().unsafe_cast()
+                                    };
+                                    let message_view: gtk::ListBox = unsafe {
+                                        message_scrolled_window
+                                            .first_child()
+                                            .unwrap()
+                                            .first_child()
+                                            .unwrap()
+                                            .unsafe_cast()
+                                    };
+                                    let message_row = create_message_row(&message);
+                                    message_view.insert(&message_row, index as i32);
+                                    if message.outgoing() {
+                                        scroll_down(message_scrolled_window);
+                                    }
+                                }
+                                break;
+                            } else if messages_data[index - 1].id() == message.id() {
+                                break;
+                            }
+                            index -= 1;
+                        }
+                        unsafe {
+                            dialog.set_data("messages", messages_data);
+                        }
+
                         if !data.dialog.pinned() {
                             dialogs_listbox_clone.remove(dialog);
                             dialogs_listbox_clone.insert(dialog, pinned_dialog_count);
@@ -177,6 +244,10 @@ async fn main() {
                 let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 let (mut found_previous, mut found_new) = (false, false);
                 let mut active_chat_lock = active_chat.lock().unwrap();
+                let main_window: gtk::Grid =
+                    unsafe { grid_base_grid.child_at(1, 0).unwrap().unsafe_cast() };
+                let message_scrolled_window: gtk::ScrolledWindow =
+                    unsafe { main_window.child_at(0, 0).unwrap().unsafe_cast() };
                 let actual_chat_id = match chat_id {
                     Some(chat_id) => chat_id,
                     None => {
@@ -202,6 +273,39 @@ async fn main() {
                         if !found_new && data.chat().id() == actual_chat_id {
                             found_new = true;
                             dialog.child().unwrap().add_css_class("dialog_active");
+                            let message_view: gtk::ListBox = unsafe {
+                                message_scrolled_window
+                                    .first_child()
+                                    .unwrap()
+                                    .first_child()
+                                    .unwrap()
+                                    .unsafe_cast()
+                            };
+                            let mut messages_data = unsafe {
+                                dialog
+                                    .steal_data::<Vec<grammers_client::types::Message>>("messages")
+                                    .unwrap()
+                            };
+                            message_view.remove_all();
+                            if messages_data.len() == 0 {
+                                let mut messages_iter = interface_handle
+                                    .clone()
+                                    .unwrap()
+                                    .iter_messages(data.chat().pack())
+                                    .limit(100);
+                                futures::executor::block_on(async {
+                                    while let Some(message) = messages_iter.next().await.unwrap() {
+                                        messages_data.insert(0, message)
+                                    }
+                                });
+                            }
+                            for message in messages_data.clone() {
+                                let message_row = create_message_row(&message);
+                                message_view.append(&message_row);
+                            }
+                            unsafe {
+                                dialog.set_data("messages", messages_data);
+                            }
                         } else if !found_previous && data.chat().id() == active_chat_value {
                             found_previous = true;
                             dialog.child().unwrap().remove_css_class("dialog_active");
@@ -212,8 +316,6 @@ async fn main() {
                     }
                     *active_chat_lock = chat_id;
                 }
-                let main_window: gtk::Grid =
-                    unsafe { grid_base_grid.child_at(1, 0).unwrap().unsafe_cast() };
                 let overlay = main_window.child_at(0, 1).unwrap();
                 match *active_chat_lock {
                     None => {
@@ -230,6 +332,8 @@ async fn main() {
                                 .unsafe_cast()
                         };
                         textview.grab_focus();
+                        message_scrolled_window.queue_resize();
+                        scroll_down(message_scrolled_window);
                     }
                 }
             }
@@ -262,7 +366,7 @@ async fn main() {
                             };
                             if data.chat().id() == chat_id {
                                 let client_handle = interface_handle.clone().unwrap();
-                                futures::executor::block_on(async {
+                                let _ = futures::executor::block_on(async {
                                     let message = client_handle
                                         .send_message(data.chat().pack(), trimmed_text)
                                         .await
@@ -280,6 +384,15 @@ async fn main() {
         glib::ControlFlow::Continue
     });
     application.run();
+}
+
+fn scroll_down(scrolled_window: gtk::ScrolledWindow) {
+    let vadjustment = scrolled_window.vadjustment();
+    glib::idle_add_local(move || {
+        // Scroll to the bottom of the window
+        vadjustment.set_value(vadjustment.upper() - vadjustment.page_size());
+        glib::ControlFlow::Break
+    });
 }
 
 fn message_labeler(message: &Option<grammers_client::types::Message>) -> Option<String> {
@@ -413,19 +526,9 @@ fn create_dialogs(
                     let interface_sender_clone = interface_sender.clone();
                     let chat_id = dialog.chat().id();
                     let future = async move {
-                        /*while let Err(e) = */
                         let _ = client_clone
                             .download_media(&downloadable, photo_path_clone.clone())
-                            .await; /*
-                                    {
-                                        if let Some(inner_err) = e.get_ref() {
-                                            if let Some(invocation_error) = inner_err.downcast_ref::<grammers_client::types::iter_buffer::InvocationError>(){
-                                                if let grammers_client::types::iter_buffer::InvocationError::Rpc(rpc_error) = invocation_error{
-                                                    rpc_error.value
-                                                }
-                                            }
-                                        }
-                                    }*/
+                            .await;
 
                         let mut conn = pool_clone.acquire().await.unwrap();
                         let _ = sqlx::query!(
@@ -510,6 +613,7 @@ fn create_dialogs(
         dialogs_listbox.append(&row);
         unsafe {
             row.set_data("dialog", dialog.clone());
+            row.set_data("messages", Vec::<grammers_client::types::Message>::new());
         }
         dialog_elements.push(row);
     }
@@ -567,15 +671,21 @@ fn build_ui(application: &gtk::Application, sender: glib::Sender<InterfaceMessag
         .hexpand(true)
         .vexpand(true)
         .build();
-    let message_view = gtk::ListBox::builder()
-        .selection_mode(gtk::SelectionMode::None)
+    let message_view = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vscrollbar_policy(gtk::PolicyType::Automatic)
         .vexpand(true)
         .build();
+    let message_view_listbox = gtk::ListBox::builder()
+        .selection_mode(gtk::SelectionMode::None)
+        .build();
+    message_view.set_child(Some(&message_view_listbox));
     let messsage_send_overlay = gtk::Overlay::builder()
         .css_classes(vec!["message_send_overlay"])
         .build();
     let message_send_box = gtk::TextView::builder()
         .css_classes(vec!["message_send_box"])
+        .wrap_mode(gtk::WrapMode::WordChar)
         .hexpand(true)
         .build();
     let font_size = message_send_box
@@ -599,11 +709,17 @@ fn build_ui(application: &gtk::Application, sender: glib::Sender<InterfaceMessag
         .hexpand(true)
         .build();
     let message_send_placeholder_clone = message_send_placeholder.clone();
+    let message_send_scrollable_clone = message_send_scrollable.clone();
     let message_send_key_controller = gtk::EventControllerKey::new();
     message_send_key_controller.connect_key_pressed(move |_, key, _, modifier| {
-        if key == gtk::gdk::Key::Return && !modifier.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
-            let _ = sender.send(InterfaceMessage::SendMessage);
-            glib::Propagation::Stop
+        if key == gtk::gdk::Key::Return {
+            if !modifier.contains(gtk::gdk::ModifierType::SHIFT_MASK) {
+                let _ = sender.send(InterfaceMessage::SendMessage);
+                glib::Propagation::Stop
+            } else {
+                scroll_down(message_send_scrollable_clone.clone());
+                glib::Propagation::Proceed
+            }
         } else {
             glib::Propagation::Proceed
         }

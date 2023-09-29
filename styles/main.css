@@ -46,3 +46,13 @@
 .message_placeholder {
     padding-left: 15px;
 }
+
+.message {
+    background-color: #182533;
+    border-radius: 5px;
+    padding: 10px;
+    margin-top: 5px;
+    margin-bottom: 5px;
+    margin-left: 20px;
+    margin-right: 50px;
+}
