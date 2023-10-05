@@ -3,56 +3,65 @@
 }
 
 .dialogs {
-    background-color: #17212B;
+    background-color: #282e33;
 }
 
 .dialog {
-    background-color: #17212B;
+    background-color: #282e33;
     padding: 10px;
 }
 
 .dialog:hover{
-    background-color: #202B36;
+    background-color: #353C43;
 }
 
 .dialog_active{
-    background-color: #2B5278;
+    background-color: #009687;
 }
 
 .dialog_active:hover{
-    background-color: #2B5278;
+    background-color: #009687;
 }
 
 .main_window {
-    background-color: #0E1621;
+    background-color: #18191D;
 }
 
 .dialog_label {
     font-weight: bold;
 }
 
-.profile_picture {
-}
-
 .message_send_box {
-    background-color: #17212B;
+    background-color: #282E33;
     padding: 15px;
+    border-left: 1px solid #242A2E;
 }
 
 .placeholder {
-    color: #888888;
+    color: #565A5E;
 }
 
 .message_placeholder {
-    padding-left: 15px;
+    padding-left: 20px;
 }
 
 .message {
-    background-color: #182533;
-    border-radius: 5px;
+    border-radius: 10px;
     padding: 10px;
     margin-top: 5px;
     margin-bottom: 5px;
     margin-left: 20px;
     margin-right: 50px;
+}
+
+.message_outgoing {
+    background-color: #2A2F33;
+}
+
+.message_incoming {
+    background-color: #33393F;
+}
+
+.sender_label {
+    font-weight: bold;
 }

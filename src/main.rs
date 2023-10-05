@@ -7,9 +7,8 @@ use simple_logger::SimpleLogger;
 use std::env;
 use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
-use tokio::runtime;
 
 const SESSION_FILE: &str = "sess.session";
 const COLORS_NUMBER: usize = 8;
@@ -28,32 +27,6 @@ fn prompt(message: &str) -> Result<String, Box<dyn std::error::Error>> {
     Ok(line)
 }
 
-fn create_message_row(message: &grammers_client::types::Message) -> gtk::ListBoxRow {
-    let message_row = gtk::ListBoxRow::new();
-    let message_grid = gtk::Grid::builder().css_classes(vec!["message"]).build();
-    message_row.set_child(Some(&message_grid));
-    let message_label = gtk::Label::builder()
-        .halign(gtk::Align::Start)
-        .label(message.text())
-        .wrap_mode(gtk::pango::WrapMode::WordChar)
-        .build();
-    match message.chat() {
-        grammers_client::types::Chat::User(..) => {}
-        _ => {
-            let sender_label = gtk::Label::builder()
-                .label(match message.sender() {
-                    Some(sender) => sender.name().to_string(),
-                    None => String::new(),
-                })
-                .halign(gtk::Align::Start)
-                .build();
-            message_grid.attach(&sender_label, 0, 0, 1, 1);
-        }
-    }
-    message_grid.attach(&message_label, 0, 1, 1, 1);
-    message_row
-}
-
 #[tokio::main]
 async fn main() {
     let (interface_sender, interface_receiver): (
@@ -63,6 +36,27 @@ async fn main() {
     let pool = sqlx::sqlite::SqlitePool::connect("sqlite:crabgram.db")
         .await
         .unwrap();
+    let (downloading_shutdown_sender, downloading_shutdown_receiver): (
+        tokio::sync::oneshot::Sender<()>,
+        tokio::sync::oneshot::Receiver<()>,
+    ) = tokio::sync::oneshot::channel();
+    let downloading_semaphore = Arc::new(tokio::sync::Semaphore::new(1));
+    let (downloading_handle_sender, downloading_handle_recevier): (
+        tokio::sync::oneshot::Sender<tokio::runtime::Handle>,
+        tokio::sync::oneshot::Receiver<tokio::runtime::Handle>,
+    ) = tokio::sync::oneshot::channel();
+    // Spawning thread for downloading media
+    thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let _ = downloading_handle_sender.send(runtime.handle().clone());
+        runtime.block_on(async {
+            let _ = downloading_shutdown_receiver.await;
+        });
+    });
+    let downloading_handle = downloading_handle_recevier.await.unwrap();
     let application = gtk::Application::builder()
         .application_id("crabgram")
         .build();
@@ -72,7 +66,7 @@ async fn main() {
         .connect_activate(move |application| build_ui(application, interface_sender_clone.clone()));
     let interface_sender_clone = interface_sender.clone();
     thread::spawn(move || {
-        runtime::Builder::new_current_thread()
+        tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap()
@@ -168,7 +162,25 @@ async fn main() {
                                             .unwrap()
                                             .unsafe_cast()
                                     };
-                                    let message_row = create_message_row(&message);
+                                    let (
+                                        downloading_handle_clone,
+                                        downloading_semaphore_clone,
+                                        client_handle_clone,
+                                    ) = match message.photo() {
+                                        Some(_) => (
+                                            Some(downloading_handle.clone()),
+                                            Some(downloading_semaphore.clone()),
+                                            interface_handle.clone(),
+                                        ),
+                                        None => (None, None, None),
+                                    };
+                                    let message_row = create_message_row(
+                                        &message,
+                                        downloading_handle_clone,
+                                        downloading_semaphore_clone,
+                                        client_handle_clone,
+                                        pool.clone(),
+                                    );
                                     message_view.insert(&message_row, index as i32);
                                     if message.outgoing() {
                                         scroll_down(message_scrolled_window);
@@ -219,9 +231,11 @@ async fn main() {
                     pool.clone(),
                     interface_sender_clone,
                     background_colors,
+                    downloading_handle.clone(),
+                    downloading_semaphore.clone(),
                 );
             }
-            InterfaceMessage::ImageUpdate(chat_id) => {
+            InterfaceMessage::ProfilePhotoUpdate(chat_id) => {
                 let dialog_element_list_lock = dialog_element_list_mutex.lock().unwrap();
                 for dialog in dialog_element_list_lock.iter() {
                     let data = unsafe {
@@ -300,7 +314,25 @@ async fn main() {
                                 });
                             }
                             for message in messages_data.clone() {
-                                let message_row = create_message_row(&message);
+                                let (
+                                    downloading_handle_clone,
+                                    downloading_semaphore_clone,
+                                    client_handle_clone,
+                                ) = match message.photo() {
+                                    Some(_) => (
+                                        Some(downloading_handle.clone()),
+                                        Some(downloading_semaphore.clone()),
+                                        interface_handle.clone(),
+                                    ),
+                                    None => (None, None, None),
+                                };
+                                let message_row = create_message_row(
+                                    &message,
+                                    downloading_handle_clone,
+                                    downloading_semaphore_clone,
+                                    client_handle_clone,
+                                    pool.clone(),
+                                );
                                 message_view.append(&message_row);
                             }
                             unsafe {
@@ -414,9 +446,10 @@ fn create_dialogs(
     pool: sqlx::pool::Pool<sqlx::Sqlite>,
     interface_sender: glib::Sender<InterfaceMessage>,
     backround_colors: [Rgb; COLORS_NUMBER],
+    downloading_handle: tokio::runtime::Handle,
+    downloading_semaphore: Arc<tokio::sync::Semaphore>,
 ) {
     let mut connection = futures::executor::block_on(async { pool.acquire().await }).unwrap();
-    let mut futures: Vec<_> = Vec::new();
     dialogs_listbox.remove_all();
     for dialog in pinned_dialogs.iter().chain(dialogs.iter().rev()) {
         let row = gtk::ListBoxRow::new();
@@ -504,7 +537,7 @@ fn create_dialogs(
             };
             let _ = match futures::executor::block_on(async {
                 sqlx::query!(
-                    r#"SELECT big FROM Photo WHERE big=false AND photo_id=?1"#,
+                    r#"SELECT big FROM ProfilePhoto WHERE big=false AND photo_id=?1"#,
                     photo_id
                 )
                 .fetch_one(&mut *connection)
@@ -525,21 +558,23 @@ fn create_dialogs(
                     let photo_id = photo_id;
                     let interface_sender_clone = interface_sender.clone();
                     let chat_id = dialog.chat().id();
-                    let future = async move {
+                    let semaphore_clone = downloading_semaphore.clone();
+                    downloading_handle.spawn(async move {
+                        let _permit = semaphore_clone.acquire().await.unwrap();
                         let _ = client_clone
                             .download_media(&downloadable, photo_path_clone.clone())
                             .await;
 
                         let mut conn = pool_clone.acquire().await.unwrap();
                         let _ = sqlx::query!(
-                            r#"INSERT INTO Photo(photo_id, big) VALUES(?1, false)"#,
+                            r#"INSERT INTO ProfilePhoto(photo_id, big) VALUES(?1, false)"#,
                             photo_id
                         )
                         .execute(&mut *conn)
                         .await;
-                        let _ = interface_sender_clone.send(InterfaceMessage::ImageUpdate(chat_id));
-                    };
-                    futures.push(future);
+                        let _ = interface_sender_clone
+                            .send(InterfaceMessage::ProfilePhotoUpdate(chat_id));
+                    });
                 }
             };
         }
@@ -617,17 +652,6 @@ fn create_dialogs(
         }
         dialog_elements.push(row);
     }
-    thread::spawn(move || {
-        let runtime = runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-        runtime.block_on(async {
-            for future in futures {
-                let _ = tokio::join!(tokio::spawn(future));
-            }
-        });
-    });
 }
 
 enum InterfaceMessage {
@@ -639,7 +663,7 @@ enum InterfaceMessage {
         >,
         grammers_client::Client,
     ),
-    ImageUpdate(i64), // This i64 is id of chat where image should be updated
+    ProfilePhotoUpdate(i64), // This i64 is id of chat where image should be updated
     MakeChatActive(Option<i64>), // This i64 is id of chat which should become active
     SendMessage,
 }
@@ -759,6 +783,87 @@ fn build_ui(application: &gtk::Application, sender: glib::Sender<InterfaceMessag
     window.set_child(Some(&grid));
 
     window.present();
+}
+
+fn create_message_row(
+    message: &grammers_client::types::Message,
+    downloading_handle: Option<tokio::runtime::Handle>,
+    downloading_semaphore: Option<Arc<tokio::sync::Semaphore>>,
+    client_handle: Option<grammers_client::Client>,
+    pool: sqlx::pool::Pool<sqlx::Sqlite>,
+) -> gtk::ListBoxRow {
+    let message_row = gtk::ListBoxRow::new();
+    let message_grid = gtk::Grid::builder().css_classes(vec!["message"]).build();
+    message_row.set_child(Some(&message_grid));
+    let message_label = gtk::Label::builder()
+        .css_classes(vec!["message_label"])
+        .halign(gtk::Align::Start)
+        .label(message.text())
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .build();
+    let sender_label = gtk::Label::builder().halign(gtk::Align::Start).build();
+    let photo_box = gtk::Image::builder().build();
+    message_grid.attach(&photo_box, 0, 1, 1, 1);
+    photo_box.set_visible(false);
+    photo_box.set_halign(gtk::Align::Fill);
+    photo_box.set_valign(gtk::Align::Fill);
+    if let Some(photo) = message.photo() {
+        let downloading_handle = downloading_handle.unwrap();
+        let downloading_semaphore = downloading_semaphore.unwrap();
+        let client_clone = client_handle.unwrap();
+        let (photo_sender, photo_receiver): (glib::Sender<String>, glib::Receiver<String>) =
+            glib::MainContext::channel(glib::Priority::DEFAULT);
+        let message_grid_clone = message_grid.clone();
+        photo_receiver.attach(None, move |photo_path| {
+            let pixbuf = gdk_pixbuf::Pixbuf::from_file(photo_path).unwrap();
+            let aspect_ratio: f64 = pixbuf.width() as f64 / pixbuf.height() as f64;
+            let width = message_grid_clone.width() / 2;
+            let height = width as f64 / aspect_ratio;
+            photo_box.set_pixel_size(width);
+            photo_box.set_from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
+            photo_box.set_visible(true);
+            glib::ControlFlow::Break
+        });
+        downloading_handle.spawn(async move {
+            let _permit = downloading_semaphore.acquire().await.unwrap();
+            let downloadable = grammers_client::types::Downloadable::Media(
+                grammers_client::types::Media::Photo(photo.clone()),
+            );
+            let photo_id = photo.id();
+            let photo_path = format!("cache/{}", photo_id);
+            let _ = client_clone
+                .download_media(&downloadable, photo_path.clone())
+                .await;
+            let mut conn = pool.acquire().await.unwrap();
+            let _ = sqlx::query!(r#"INSERT INTO Photo(photo_id) VALUES(?1)"#, photo_id)
+                .execute(&mut *conn)
+                .await;
+            let _ = photo_sender.send(photo_path);
+        });
+    }
+    if message.outgoing() {
+        message_grid.add_css_class("message_outgoing");
+        sender_label.set_visible(false);
+    } else {
+        message_grid.add_css_class("message_incoming");
+    }
+    message_grid.attach(&sender_label, 0, 0, 1, 1);
+    match message.chat() {
+        grammers_client::types::Chat::User(..) => {
+            sender_label.set_visible(false);
+        }
+        _ => {
+            sender_label.set_label(
+                match message.sender() {
+                    Some(sender) => sender.name().to_string(),
+                    None => String::new(),
+                }
+                .as_ref(),
+            );
+        }
+    }
+    message_grid.attach(&message_label, 0, 2, 1, 1);
+    message_row
 }
 
 async fn async_main(
