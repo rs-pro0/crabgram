@@ -9,6 +9,7 @@ use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
+mod custom_widgets;
 
 const SESSION_FILE: &str = "sess.session";
 const COLORS_NUMBER: usize = 8;
@@ -145,45 +146,47 @@ async fn main() {
                         let mut index = messages_data.len();
                         loop {
                             if index == 0 || messages_data[index - 1].id() < message.id() {
-                                messages_data.insert(index, message.clone());
-                                let active_chat_lock = active_chat.lock().unwrap();
-                                if *active_chat_lock == Some(data.chat().id()) {
-                                    let main_window: gtk::Grid = unsafe {
-                                        grid_base_grid.child_at(1, 0).unwrap().unsafe_cast()
-                                    };
-                                    let message_scrolled_window: gtk::ScrolledWindow = unsafe {
-                                        main_window.child_at(0, 0).unwrap().unsafe_cast()
-                                    };
-                                    let message_view: gtk::ListBox = unsafe {
-                                        message_scrolled_window
-                                            .first_child()
-                                            .unwrap()
-                                            .first_child()
-                                            .unwrap()
-                                            .unsafe_cast()
-                                    };
-                                    let (
-                                        downloading_handle_clone,
-                                        downloading_semaphore_clone,
-                                        client_handle_clone,
-                                    ) = match message.photo() {
-                                        Some(_) => (
-                                            Some(downloading_handle.clone()),
-                                            Some(downloading_semaphore.clone()),
-                                            interface_handle.clone(),
-                                        ),
-                                        None => (None, None, None),
-                                    };
-                                    let message_row = create_message_row(
-                                        &message,
-                                        downloading_handle_clone,
-                                        downloading_semaphore_clone,
-                                        client_handle_clone,
-                                        pool.clone(),
-                                    );
-                                    message_view.insert(&message_row, index as i32);
-                                    if message.outgoing() {
-                                        scroll_down(message_scrolled_window);
+                                if messages_data.len() != 0 {
+                                    messages_data.insert(index, message.clone());
+                                    let active_chat_lock = active_chat.lock().unwrap();
+                                    if *active_chat_lock == Some(data.chat().id()) {
+                                        let main_window: gtk::Grid = unsafe {
+                                            grid_base_grid.child_at(1, 0).unwrap().unsafe_cast()
+                                        };
+                                        let message_scrolled_window: gtk::ScrolledWindow = unsafe {
+                                            main_window.child_at(0, 0).unwrap().unsafe_cast()
+                                        };
+                                        let message_view: gtk::ListBox = unsafe {
+                                            message_scrolled_window
+                                                .first_child()
+                                                .unwrap()
+                                                .first_child()
+                                                .unwrap()
+                                                .unsafe_cast()
+                                        };
+                                        let (
+                                            downloading_handle_clone,
+                                            downloading_semaphore_clone,
+                                            client_handle_clone,
+                                        ) = match message.photo() {
+                                            Some(_) => (
+                                                Some(downloading_handle.clone()),
+                                                Some(downloading_semaphore.clone()),
+                                                interface_handle.clone(),
+                                            ),
+                                            None => (None, None, None),
+                                        };
+                                        let message_row = create_message_row(
+                                            &message,
+                                            downloading_handle_clone,
+                                            downloading_semaphore_clone,
+                                            client_handle_clone,
+                                            pool.clone(),
+                                        );
+                                        message_view.insert(&message_row, index as i32);
+                                        if message.outgoing() {
+                                            scroll_down(message_scrolled_window);
+                                        }
                                     }
                                 }
                                 break;
@@ -793,8 +796,13 @@ fn create_message_row(
     pool: sqlx::pool::Pool<sqlx::Sqlite>,
 ) -> gtk::ListBoxRow {
     let message_row = gtk::ListBoxRow::new();
-    let message_grid = gtk::Grid::builder().css_classes(vec!["message"]).build();
-    message_row.set_child(Some(&message_grid));
+    let constraint_layout = gtk::ConstraintLayout::new();
+    let message_box = gtk::Box::builder()
+        .css_classes(vec!["message"])
+        .layout_manager(&constraint_layout)
+        .hexpand(true)
+        .build();
+    message_row.set_child(Some(&message_box));
     let message_label = gtk::Label::builder()
         .css_classes(vec!["message_label"])
         .halign(gtk::Align::Start)
@@ -802,52 +810,125 @@ fn create_message_row(
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .build();
     let sender_label = gtk::Label::builder().halign(gtk::Align::Start).build();
-    let photo_box = gtk::Image::builder().build();
-    message_grid.attach(&photo_box, 0, 1, 1, 1);
-    photo_box.set_visible(false);
-    photo_box.set_halign(gtk::Align::Fill);
-    photo_box.set_valign(gtk::Align::Fill);
+    //let photo_box = gtk::DrawingArea::builder().visible(false).build();
+    let photo_box = gtk::Picture::builder()
+        .content_fit(gtk::ContentFit::Fill)
+        .build();
+    message_box.append(&photo_box);
+    /*let height_constraint = gtk::Constraint::new(
+        Some(&message_box),
+        gtk::ConstraintAttribute::Height,
+        gtk::ConstraintRelation::Eq,
+        Some(&message_label),
+        gtk::ConstraintAttribute::Height,
+        1.0,
+        110.0,
+        1,
+    );
+    constraint_layout.add_constraint(height_constraint);*/
+    let message_label_width_constraint = gtk::Constraint::new(
+        Some(&message_label),
+        gtk::ConstraintAttribute::Width,
+        gtk::ConstraintRelation::Eq,
+        Some(&message_box),
+        gtk::ConstraintAttribute::Width,
+        1.0,
+        -10.0,
+        1,
+    );
+    constraint_layout.add_constraint(message_label_width_constraint);
+    let dumb_constraint = gtk::Constraint::new_constant(
+        Some(&photo_box),
+        gtk::ConstraintAttribute::Width,
+        gtk::ConstraintRelation::Eq,
+        100.0,
+        1,
+    );
+    constraint_layout.add_constraint(dumb_constraint);
+    let dumb_constraint2 = gtk::Constraint::new_constant(
+        Some(&photo_box),
+        gtk::ConstraintAttribute::Height,
+        gtk::ConstraintRelation::Eq,
+        100.0,
+        1,
+    );
+    constraint_layout.add_constraint(dumb_constraint2);
+    let sender_label_top_constraint = gtk::Constraint::new(
+        Some(&sender_label),
+        gtk::ConstraintAttribute::Top,
+        gtk::ConstraintRelation::Eq,
+        Some(&message_box),
+        gtk::ConstraintAttribute::Top,
+        1.0,
+        1.0,
+        1,
+    );
+    constraint_layout.add_constraint(sender_label_top_constraint);
+    let photo_box_top_constraint = gtk::Constraint::new(
+        Some(&photo_box),
+        gtk::ConstraintAttribute::Top,
+        gtk::ConstraintRelation::Eq,
+        Some(&sender_label),
+        gtk::ConstraintAttribute::Bottom,
+        1.0,
+        1.0,
+        1,
+    );
+    constraint_layout.add_constraint(photo_box_top_constraint);
+    let message_label_top_constraint = gtk::Constraint::new(
+        Some(&message_label),
+        gtk::ConstraintAttribute::Top,
+        gtk::ConstraintRelation::Eq,
+        Some(&photo_box),
+        gtk::ConstraintAttribute::Bottom,
+        1.0,
+        1.0,
+        1,
+    );
+    constraint_layout.add_constraint(message_label_top_constraint);
     if let Some(photo) = message.photo() {
         let downloading_handle = downloading_handle.unwrap();
         let downloading_semaphore = downloading_semaphore.unwrap();
         let client_clone = client_handle.unwrap();
         let (photo_sender, photo_receiver): (glib::Sender<String>, glib::Receiver<String>) =
             glib::MainContext::channel(glib::Priority::DEFAULT);
-        let message_grid_clone = message_grid.clone();
         photo_receiver.attach(None, move |photo_path| {
-            let pixbuf = gdk_pixbuf::Pixbuf::from_file(photo_path).unwrap();
-            let aspect_ratio: f64 = pixbuf.width() as f64 / pixbuf.height() as f64;
-            let width = message_grid_clone.width() / 2;
-            let height = width as f64 / aspect_ratio;
-            photo_box.set_pixel_size(width);
-            photo_box.set_from_paintable(Some(&gtk::gdk::Texture::for_pixbuf(&pixbuf)));
             photo_box.set_visible(true);
+            photo_box.set_filename(Some(photo_path));
             glib::ControlFlow::Break
         });
         downloading_handle.spawn(async move {
-            let _permit = downloading_semaphore.acquire().await.unwrap();
-            let downloadable = grammers_client::types::Downloadable::Media(
-                grammers_client::types::Media::Photo(photo.clone()),
-            );
+            let mut conn = pool.acquire().await.unwrap();
             let photo_id = photo.id();
             let photo_path = format!("cache/{}", photo_id);
-            let _ = client_clone
-                .download_media(&downloadable, photo_path.clone())
+            let exists = sqlx::query!(r#"SELECT * FROM Photo WHERE photo_id = ?1"#, photo_id)
+                .fetch_one(&mut *conn)
                 .await;
-            let mut conn = pool.acquire().await.unwrap();
-            let _ = sqlx::query!(r#"INSERT INTO Photo(photo_id) VALUES(?1)"#, photo_id)
-                .execute(&mut *conn)
-                .await;
+            match exists {
+                Err(_) => {
+                    let _permit = downloading_semaphore.acquire().await.unwrap();
+                    let downloadable = grammers_client::types::Downloadable::Media(
+                        grammers_client::types::Media::Photo(photo.clone()),
+                    );
+                    let _ = client_clone
+                        .download_media(&downloadable, photo_path.clone())
+                        .await;
+                    let _ = sqlx::query!(r#"INSERT INTO Photo(photo_id) VALUES(?1)"#, photo_id)
+                        .execute(&mut *conn)
+                        .await;
+                }
+                Ok(_) => {}
+            }
             let _ = photo_sender.send(photo_path);
         });
     }
     if message.outgoing() {
-        message_grid.add_css_class("message_outgoing");
+        message_box.add_css_class("message_outgoing");
         sender_label.set_visible(false);
     } else {
-        message_grid.add_css_class("message_incoming");
+        message_box.add_css_class("message_incoming");
     }
-    message_grid.attach(&sender_label, 0, 0, 1, 1);
+    message_box.append(&sender_label);
     match message.chat() {
         grammers_client::types::Chat::User(..) => {
             sender_label.set_visible(false);
@@ -862,7 +943,7 @@ fn create_message_row(
             );
         }
     }
-    message_grid.attach(&message_label, 0, 2, 1, 1);
+    message_box.append(&message_label);
     message_row
 }
 
