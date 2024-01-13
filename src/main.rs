@@ -9,7 +9,6 @@ use std::io::{self, BufRead as _, Write as _};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-mod custom_widgets;
 
 const SESSION_FILE: &str = "sess.session";
 const COLORS_NUMBER: usize = 8;
