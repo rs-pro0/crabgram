@@ -1,0 +1,57 @@
+struct InterfaceDialog {
+    chat_name: string,
+}
+component MessageView inherits Rectangle{
+    width: 60%;
+}
+export component Dialog inherits Rectangle{
+    in property <string> chat_name;
+    ta := TouchArea{
+        GridLayout{
+            padding-top: 10px;
+            padding-bottom: 10px;
+            padding-left: 5px;
+            text_elem := Text {
+                padding-top: 100px;
+                text: chat_name;
+                color: red;
+            }
+        }
+    }
+    property <bool> active: false;
+    states [
+        active when active:{
+            background: #2B5278;
+        }
+        hovered when !active && ta.has-hover:{
+            background: #202B36;
+        }
+        default when !active && !ta.has-hover: {
+            background: #17212B;
+        }
+    ]
+}
+export component Dialogs inherits VerticalLayout{
+    alignment: start;
+   in property <[InterfaceDialog]> dialogs;
+   for dialog in dialogs: Dialog{
+       chat_name: dialog.chat_name;
+   }
+}
+export component MainWindow inherits Window {
+    min-width: 640px;
+    min-height: 480px;
+    background: #0E1621;
+    GridLayout{
+        Rectangle{
+            height: 100%;
+            Dialogs{
+            }
+            background: #17212B;
+            col:0;
+        }
+        MessageView{
+            col:1;
+        }
+    }
+}
