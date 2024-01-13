@@ -1,4 +1,16 @@
-use colors_transform::{Color, Rgb};
+use std::{thread, time::Duration};
+pub mod interface;
+
+#[tokio::main]
+async fn main() {
+    thread::spawn(|| {
+        MainWindow::new().unwrap().run().unwrap();
+    });
+    loop {
+        tokio::time::sleep(Duration::from_secs(5)).await;
+    }
+}
+/*use colors_transform::{Color, Rgb};
 use dotenv::dotenv;
 use gtk::glib;
 use gtk::prelude::*;
@@ -1025,3 +1037,4 @@ async fn async_main(
 
     Ok(())
 }
+*/
