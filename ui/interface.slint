@@ -1,21 +1,89 @@
+import { ScrollView } from "std-widgets.slint";
+
+global ChatSelector{
+    callback select_chat(string);
+}
+
 struct InterfaceDialog {
+    id: string,
     chat_name: string,
+    pinned: bool,
+    profile_photo: image,
+}
+struct DisplayMessage {
+    id: string,
+    text: string,
+    outgoing: bool,
+}
+struct SelectedChat {
+    empty: bool,
+    id: string,
+}
+component Message inherits Rectangle{
+    in property <DisplayMessage> message;
+    background: #2B5278;
+    border-radius: 5px;
+    Text {
+        color: white;
+        width: 100%;
+        text: message.text;
+        wrap: word-wrap;
+    }
 }
 component MessageView inherits Rectangle{
+    in property <[DisplayMessage]> messages;
     width: 60%;
+    height: 100%;
+    HorizontalLayout {
+        ScrollView{
+            function to_bottom(){
+                self.viewport-y = self.visible-height - self.viewport-height;
+            }
+            viewport-height: max(messages.length*50*1px, root.height);
+            viewport-y: self.visible-height - self.viewport-height;
+            VerticalLayout {
+                spacing: 5px;
+                for message in messages:
+                        Message {
+                            width: 50%;
+                            message: message;
+                        }
+                Text { text: messages.length;
+                    color: red;
+                }
+            }
+        }
+    }
 }
-export component Dialog inherits Rectangle{
+component Dialog inherits Rectangle{
     in property <string> chat_name;
+    in property <string> chat_id;
+    in property <image> profile_photo;
     ta := TouchArea{
-        GridLayout{
+        gl := GridLayout{
             padding-top: 10px;
             padding-bottom: 10px;
             padding-left: 5px;
+            spacing: 10px;
+            Rectangle {
+                height: photo.height;
+                width: photo.width;
+                border-radius: self.height / 2;
+                clip: true;
+                photo := Image {
+                    source: profile_photo;
+                    width: 50px;
+                }
+            }
             text_elem := Text {
+                vertical-alignment: center;
                 padding-top: 100px;
                 text: chat_name;
-                color: red;
+                color: #F5F5F5;
             }
+        }
+        clicked => {
+            ChatSelector.select_chat(chat_id);
         }
     }
     property <bool> active: false;
@@ -31,27 +99,59 @@ export component Dialog inherits Rectangle{
         }
     ]
 }
-export component Dialogs inherits VerticalLayout{
-    alignment: start;
-   in property <[InterfaceDialog]> dialogs;
-   for dialog in dialogs: Dialog{
-       chat_name: dialog.chat_name;
-   }
+export component Dialogs inherits ScrollView{
+    in property <[InterfaceDialog]> dialogs: [];
+    viewport-height: max(dialogs.length*50*1px, root.height);
+    VerticalLayout {
+        alignment: start;
+        Text {
+            text: "For debugging purposes "+dialogs.length;
+        }
+        if (dialogs.length == 0): 
+            Text{
+                text: "Dialogs will appear here";
+            }
+        for dialog in dialogs:
+            HorizontalLayout {
+                if dialog.pinned:
+                    Dialog {
+                        chat_id: dialog.id;
+                        chat_name: dialog.chat_name;
+                        profile_photo: dialog.profile-photo;
+                    }
+            }
+        for dialog in dialogs:
+            HorizontalLayout {
+                if !dialog.pinned:
+                    Dialog { 
+                        chat_id: dialog.id;
+                        chat_name: dialog.chat_name;
+                        profile_photo: dialog.profile-photo;
+                    }
+            }
+    }
+    @children
 }
 export component MainWindow inherits Window {
+    in property <[InterfaceDialog]> dialog_list;
+    in property <SelectedChat> selected_chat;
+    in property <[DisplayMessage]> selected_chat_messages;
+    callback select_chat <=> ChatSelector.select_chat;
     min-width: 640px;
     min-height: 480px;
     background: #0E1621;
-    GridLayout{
-        Rectangle{
+    GridLayout {
+        Rectangle {
             height: 100%;
-            Dialogs{
+            dialogs := Dialogs {
+                dialogs: dialog_list;
             }
             background: #17212B;
             col:0;
         }
-        MessageView{
+        MessageView {
             col:1;
+            messages: selected_chat_messages;
         }
     }
 }
